@@ -8,6 +8,25 @@ The UI talks only to the frontend. Nginx routes `/api/*` to the services behind 
   <img src="docs/architecture-diagram.svg" alt="EventHub architecture: React frontend, Auth, Catalog, Booking, Notification worker, AI Insight, Analytics" width="720">
 </p>
 
+## Screenshots
+
+Running on OpenShift (ROSA), public frontend Route.
+
+<p align="center">
+  <img src="docs/screenshots/catalog.png" alt="EventHub catalog: register or sign in, four campus events" width="720">
+</p>
+<p align="center"><em>Catalog — events from the Java service; booking requires a JWT from auth.</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="EventHub dashboard: KPI cards, bookings over time, review sentiment" width="720">
+</p>
+<p align="center"><em>Dashboard — Redis snapshot (events, bookings, revenue, reviews, charts).</em></p>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-events.png" alt="EventHub events table with bookings, revenue, reviews, and sentiment" width="720">
+</p>
+<p align="center"><em>Events table — per-event bookings, revenue, reviews, and sentiment.</em></p>
+
 ## Features
 
 - JWT auth (register / login) against PostgreSQL
@@ -97,7 +116,7 @@ Helpers: [`infra/openshift/deploy.sh`](infra/openshift/deploy.sh).
 frontend/          React SPA + Nginx reverse proxy
 services/          One folder per microservice + Containerfile
 db-seed/           MySQL and MongoDB seed data
-docs/              Architecture, API contract, diagram
+docs/              Architecture, API contract, diagram, screenshots
 infra/scripts/     Podman run-all + smoke test
 infra/openshift/   SCC-safe images and cluster deploy script
 ```
