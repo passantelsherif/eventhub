@@ -1,0 +1,8 @@
+# Official mongo cannot start as the random UID OpenShift assigns.
+# Make data dirs group-writable (OpenShift pods are in group 0).
+FROM docker.io/library/mongo:7
+USER root
+RUN mkdir -p /data/db /data/configdb \
+ && chgrp -R 0 /data/db /data/configdb \
+ && chmod -R g+rwX /data/db /data/configdb
+USER 1001

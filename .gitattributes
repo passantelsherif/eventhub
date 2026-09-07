@@ -1,0 +1,10 @@
+# These files are executed by Linux tooling (bash in WSL, podman build), so
+# they must keep LF endings even when checked out on Windows with
+# core.autocrlf=true. CRLF here fails at the shebang with "$'\r': command not
+# found" and breaks container builds.
+*.sh            text eol=lf
+Containerfile   text eol=lf
+.containerignore text eol=lf
+containerignore text eol=lf
+nginx.conf      text eol=lf
+*.sql           text eol=lf

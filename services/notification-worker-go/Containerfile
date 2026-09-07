@@ -1,0 +1,28 @@
+# ── Stage 1: Build ─────────────────────────────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /build
+
+# Download dependencies first (cached layer)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and compile
+# CGO_ENABLED=0 = fully static binary (no C library dependencies)
+# This is critical — it lets us use a minimal alpine runtime image
+COPY main.go .
+RUN CGO_ENABLED=0 GOOS=linux go build -o notification-worker .
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────────
+FROM alpine:3.19 AS runtime
+
+WORKDIR /app
+
+COPY --from=builder /build/notification-worker .
+
+# No HTTP server = no HTTP health check.
+# We check the process is still alive instead.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD pgrep notification-worker || exit 1
+
+CMD ["./notification-worker"]

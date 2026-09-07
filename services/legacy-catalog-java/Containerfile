@@ -1,0 +1,31 @@
+# ── Stage 1: Build ─────────────────────────────────────────────────────────────
+# Use Maven with JDK 8 (matches pom.xml's <java.version>8</java.version>)
+FROM docker.io/library/maven:3.9-eclipse-temurin-8 AS builder
+
+WORKDIR /build
+
+# Copy pom.xml first — Maven downloads dependencies as a cached layer.
+# This means if only your Java code changes, Maven won't re-download the internet.
+COPY pom.xml .
+RUN mvn dependency:go-offline -q
+
+# Now copy the source and build the JAR
+COPY src/ ./src/
+RUN mvn package -DskipTests -q
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────────
+# Only the JRE (not the full JDK + Maven), alpine for small size
+FROM docker.io/library/eclipse-temurin:8-jre-alpine AS runtime
+
+WORKDIR /app
+
+# Copy ONLY the compiled JAR from the builder stage — nothing else
+COPY --from=builder /build/target/legacy-catalog-1.0.0.jar app.jar
+
+EXPOSE 8081
+
+# Health check — Spring Boot doesn't have actuator, so we hit the catalog endpoint
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -qO- http://localhost:8081/api/catalog || exit 1
+
+CMD ["java", "-jar", "app.jar"]

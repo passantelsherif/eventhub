@@ -1,0 +1,35 @@
+# ── Stage 1: Build React app ───────────────────────────────────────────────────
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Cache dependency layer
+COPY package*.json ./
+RUN npm install
+
+# Copy source and build
+COPY . .
+RUN npm run build
+# Output lands in /app/dist
+
+# ── Stage 2: Serve with Nginx ──────────────────────────────────────────────────
+FROM docker.io/library/nginx:alpine AS runtime
+
+# Replace default nginx config with ours (has proxy rules + SPA fallback).
+# Goes in templates/ so the image's entrypoint runs envsubst over it and
+# writes the result to conf.d/default.conf before nginx starts.
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+
+# OpenShift assigns a random non-root UID in group 0. These dirs must be
+# group-writable so nginx can write its pid, cache, logs, and envsubst output.
+RUN mkdir -p /var/cache/nginx /var/log/nginx /run \
+ && chgrp -R 0 /var/cache/nginx /var/log/nginx /run /etc/nginx /usr/share/nginx/html \
+ && chmod -R g+rwX /var/cache/nginx /var/log/nginx /run /etc/nginx /usr/share/nginx/html
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/ || exit 1;
+
+# nginx starts automatically as the default CMD in the nginx base image

@@ -1,0 +1,7 @@
+# Official rabbitmq needs writable data/log dirs under OpenShift's random UID.
+FROM docker.io/library/rabbitmq:3-alpine
+USER root
+RUN mkdir -p /var/lib/rabbitmq /var/log/rabbitmq /etc/rabbitmq \
+ && chgrp -R 0 /var/lib/rabbitmq /var/log/rabbitmq /etc/rabbitmq \
+ && chmod -R g+rwX /var/lib/rabbitmq /var/log/rabbitmq /etc/rabbitmq
+USER 1001

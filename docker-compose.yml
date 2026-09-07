@@ -1,0 +1,301 @@
+name: eventhub
+
+services:
+  # ─────────────── Infrastructure ───────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Runs automatically the first time the data volume is empty.
+      - ./db-seed/mysql-seed.sql:/docker-entrypoint-initdb.d/01-catalog-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    volumes:
+      - mongo-data:/data/db
+      - ./db-seed/mongo-seed.js:/docker-entrypoint-initdb.d/01-bookings-seed.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    container_name: rabbitmq
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_ERLANG_COOKIE: eventhub
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq/mnesia
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ─────────────── Services ───────────────
+  auth-service:
+    build:
+      context: ./services/auth-service-node
+      dockerfile: Containerfile
+    image: eventhub/auth-service:local
+    container_name: auth-service
+    environment:
+      PORT: 8082
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  legacy-catalog:
+    build:
+      context: ./services/legacy-catalog-java
+      dockerfile: Containerfile
+    image: eventhub/legacy-catalog:local
+    container_name: legacy-catalog
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/${MYSQL_DATABASE}?allowPublicKeyRetrieval=true&useSSL=false"
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/catalog"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  ai-insight:
+    build:
+      context: ./services/ai-insight-service-python
+      dockerfile: Containerfile
+    image: eventhub/ai-insight:local
+    container_name: ai-insight
+    environment:
+      PORT: 8084
+      OLLAMA_URL: ${OLLAMA_URL}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD", "python", "-c", "__import__('urllib.request').request.urlopen('http://127.0.0.1:8084/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  booking-service:
+    build:
+      context: ./services/booking-service-python
+      dockerfile: Containerfile
+    image: eventhub/booking-service:local
+    container_name: booking-service
+    environment:
+      PORT: 8083
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: ${MONGO_DB}
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/"
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE}
+      AI_INSIGHT_URL: http://ai-insight:8084
+    ports:
+      - "8083:8083"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ai-insight:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "__import__('urllib.request').request.urlopen('http://127.0.0.1:8083/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: ./services/notification-worker-go
+      dockerfile: Containerfile
+    image: eventhub/notification-worker:local
+    container_name: notification-worker
+    environment:
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/"
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "notification-worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  analytics-api:
+    build:
+      context: ./services/analytics-service-python
+      dockerfile: Containerfile
+    image: eventhub/analytics:local
+    container_name: analytics-api
+    environment:
+      PORT: 8085
+      REDIS_URL: redis://redis:6379/0
+      BOOKING_SERVICE_URL: http://booking-service:8083
+      CATALOG_SERVICE_URL: http://legacy-catalog:8081
+      SNAPSHOT_KEY: ${SNAPSHOT_KEY}
+    ports:
+      - "8085:8085"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "__import__('urllib.request').request.urlopen('http://127.0.0.1:8085/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # Same image as analytics-api, different command. Runs once and exits, so the
+  # dashboard has real data by the time `up` finishes.
+  analytics-job:
+    build:
+      context: ./services/analytics-service-python
+      dockerfile: Containerfile
+    image: eventhub/analytics:local
+    container_name: analytics-job
+    command: ["python", "job.py"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BOOKING_SERVICE_URL: http://booking-service:8083
+      CATALOG_SERVICE_URL: http://legacy-catalog:8081
+      SNAPSHOT_KEY: ${SNAPSHOT_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+      legacy-catalog:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Containerfile
+    image: eventhub/frontend:local
+    container_name: frontend
+    environment:
+      DNS_RESOLVER: ${DNS_RESOLVER}
+    ports:
+      - "3000:8080"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      legacy-catalog:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
+      ai-insight:
+        condition: service_healthy
+      analytics-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  mysql-data:
+  mongo-data:
+  redis-data:
+  rabbitmq-data:
+
+networks:
+  default:
+    name: eventhub-net
+    ipam:
+      config:
+        # Fixed subnet so the DNS gateway address is predictable — the frontend's
+        # nginx resolver needs to know it up front.
+        - subnet: 10.89.100.0/24
